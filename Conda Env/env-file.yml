@@ -370,4 +370,4 @@ dependencies:
       - universal-pathlib==0.2.5
       - wsidicom==0.22.0
       - xsdata==24.3.1
-prefix: C:\Users\Motoc\anaconda3\envs\Project_11_Technical_Note_V2
+prefix: C:\Users\Motoc\anaconda3\envs\GenericTiffHandler_Environment

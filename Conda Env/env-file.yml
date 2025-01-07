@@ -1,4 +1,4 @@
-﻿name: Project_11_Technical_Note_V2
+﻿name: GenericTiffHandler_Environment
 channels:
   - pytorch
   - menpo

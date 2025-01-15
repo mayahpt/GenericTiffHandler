@@ -1,0 +1,8 @@
+Create a fresh environment with Python 3.10
+
+pip install pyvips
+pip install tifffile
+pip install dask
+pip install joblib 
+python -m pip install histomicstk --find-links https://girder.github.io/large_image_wheels
+pip install tqdm

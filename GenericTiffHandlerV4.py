@@ -189,4 +189,112 @@ class GenericTiffHandler:
             mask = (mask - min_val) / (max_val - min_val)
         return mask
 
+    def get_original_magnification(self,filetype):
+        if self.ogMag is not None:
+            return self.ogMag
+        else:
+            if filetype == '.scn':
+                # XML type metadata
+                metadata_str = self.tiff_image.scn_metadata
+                root = ET.fromstring(metadata_str)
+                # Pretty-print the XML tree structure (for inspection)
+                # Search for a specific element (e.g., Objective)
+                objective_element = root.findall(".//{http://www.leica-microsystems.com/scn/2010/10/01}objective")
+                objectives = [np.float32(element.text) for element in objective_element]
+                maximum_objective = int(np.max(objectives))
+                
+                return maximum_objective
+            
+            elif filetype == '.svs':
+                metadata_str = self.tiff_image.pages[0].tags[270].value
+                objective_element = metadata_str.split('|')
+                objective_element = [element for element in objective_element if f"Mag" in element]
+                objective_element = [element.split('=')[1] for element in objective_element]
+                objective_element = int(objective_element[0])
+                
+                return objective_element
+
+            elif filetype == '.ndpi':
+                return int(self.tiff_image.pages[0].tags[65421].value)
+            else:
+                print("No metadata available for this file type.")
+            return None
     
+    def get_original_pixel_size(self,filetype):
+        if self.ogMpp is not None:
+            return self.ogMpp
+        else:
+            if filetype == '.scn':
+                metadata_str_x = self.tiff_image.pages[3].tags['XResolution'].value[0]
+                metadata_str_y = self.tiff_image.pages[3].tags['YResolution'].value[0]
+                pixel_size = 10000/(metadata_str_x), 10000/(metadata_str_y)
+                
+                return np.unique(pixel_size)
+
+            elif filetype == '.svs':
+                metadata_str = self.tiff_image.pages[0].tags[270].value
+                objective_element = metadata_str.split('|')
+                objective_element = [element for element in objective_element if f"MPP" in element]
+                objective_element = [element.split('=')[1] for element in objective_element]
+
+                pixel_size = float(objective_element[0])
+                return pixel_size
+            
+            elif filetype == '.ndpi':
+                metadata_str_x = self.tiff_image.pages[0].tags['XResolution'].value[0]
+                metadata_str_y = self.tiff_image.pages[0].tags['YResolution'].value[0]
+
+                pixel_size = 10000/(metadata_str_x), 10000/(metadata_str_y)
+                return np.unique(pixel_size)
+            
+            else:
+                print("Could not find the metadata information for this type of file.")
+                return None
+
+    def get_current_magnification(self):
+        return self.currentMag
+    
+    def get_current_pixel_size(self):
+        return self.currentMpp
+
+    def convert_between_magnification(self, target_magnification=20, method='1'):
+        # Check if the target magnification is the same as the current magnification
+        if target_magnification == self.currentMag or target_magnification == 0:
+            return None
+        elif target_magnification < 0:
+            raise ValueError("The target magnification must be a positive number.")
+        elif target_magnification > self.currentMag:
+            raise ValueError("The target magnification must be less than the current magnification.")
+            # TO IMPLEMENT If the target magnification is greater than the current magnification re initialize the image
+        elif target_magnification > self.ogMag:
+            raise ValueError("The target magnification must be less than the original magnification.")
+        else:
+            assert method in ['1','2'],'Invalid method'
+            if method == 1:
+                # Conversion factor
+                conversion_factor = self.currentMag / target_magnification
+                # Convert dask array
+                self.tiff_image_dask_array = self.tiff_image_dask_array[::conversion_factor, ::conversion_factor]
+                # Update current magnification
+                self.currentMag = target_magnification
+                # Update current pixel size
+                self.currentMpp = self.currentMpp * conversion_factor
+                return None
+            elif method == 2:
+                # Conversion factor
+                conversion_factor = self.currentMag / target_magnification
+                new_height = int(self.tiff_image_dask_array.shape[0] / conversion_factor)
+                new_width = int(self.tiff_image_dask_array.shape[1] / conversion_factor)
+                # Generate row and column indices
+                row_indices = (da.arange(new_height) * conversion_factor).astype(int)
+                col_indices = (da.arange(new_width) * conversion_factor).astype(int)
+                # Use advanced indexing to resize
+                resized_image = self.tiff_image_dask_array[row_indices][:, col_indices]
+                # Update current magnification
+                self.currentMag = target_magnification
+                # Update current pixel size
+                self.currentMpp = self.currentMpp * conversion_factor
+                # Update the Dask array
+                self.tiff_image_dask_array = resized_image
+                return None
+        

@@ -37,7 +37,8 @@ import matplotlib.pyplot as plt
 
 # Increase the maximum number of pixels that can be processed by PIL
 PIL.Image.MAX_IMAGE_PIXELS = None 
-
+#-------------------------------------------------------------------
+# General functions
 def standardize_image_for_display(image):
     shape = image.shape
     ndim = len(shape)
@@ -73,7 +74,7 @@ def standardize_shape(shape):
     else:
         raise ValueError(f"Unexpected shape: {shape}")
 
-
+#-------------------------------------------------------------------
 class GenericTiffHandler:
     def __init__(self, path=None, tiff_image_dask_array=None, channel=None):
         

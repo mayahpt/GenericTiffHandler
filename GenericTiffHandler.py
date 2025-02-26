@@ -19,8 +19,8 @@ import xml.etree.ElementTree as ET  # Needed for XML metadata processing
 
 #-------------------------------------------------------------------
 # Setup OpenSlide and VIPS paths
-OPENSLIDE_PATH = os.path.abspath(r".\Utils\OpenSlide\openslide-bin-4.0.0.3-windows-x64\bin")
-VIPS_BIN_PATH = os.path.abspath(r".\Utils\VIPS\vips-dev-8.15\bin")
+OPENSLIDE_PATH = os.path.abspath((os.path.join(os.path.dirname(os.path.realpath(__file__)),r".\Utils\OpenSlide\openslide-bin-4.0.0.3-windows-x64\bin"))
+VIPS_BIN_PATH = os.path.abspath((os.path.join(os.path.dirname(os.path.realpath(__file__)),r".\Utils\VIPS\vips-dev-8.15\bin"))
 
 if hasattr(os, 'add_dll_directory'):
     with os.add_dll_directory(OPENSLIDE_PATH):

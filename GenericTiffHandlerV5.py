@@ -168,9 +168,9 @@ class GenericTiffHandler:
         """
         slide_dims = standardize_shape(np.shape(self.tiff_image_dask_array))
         if len(slide_dims) == 3:  # e.g. (z, height, width)
-            _, height, width = slide_dims
+            _, width, height = slide_dims
         else:
-            height, width = slide_dims
+            width, height = slide_dims
         
         tiles_y = int(np.ceil(height / tile_height))
         tiles_x = int(np.ceil(width / tile_width))

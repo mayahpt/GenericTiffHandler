@@ -1,34 +1,12 @@
-import json
 import numpy as np
 import os
-import cv2
-from concurrent.futures import ThreadPoolExecutor
 from PIL import Image
-import glob
-import shutil
-import pyvips
-import tqdm
 import PIL.Image
 import tifffile
 import zarr
 import dask.array as da
 import matplotlib.pyplot as plt
-import openslide
-from openslide.deepzoom import DeepZoomGenerator
 import xml.etree.ElementTree as ET  # Needed for XML metadata processing
-
-#-------------------------------------------------------------------
-# Setup OpenSlide and VIPS paths
-OPENSLIDE_PATH = os.path.abspath((os.path.join(os.path.dirname(os.path.realpath(__file__)),r".\Utils\OpenSlide\openslide-bin-4.0.0.3-windows-x64\bin")))
-VIPS_BIN_PATH = os.path.abspath((os.path.join(os.path.dirname(os.path.realpath(__file__)),r".\Utils\VIPS\vips-dev-8.15\bin")))
-
-if hasattr(os, 'add_dll_directory'):
-    with os.add_dll_directory(OPENSLIDE_PATH):
-        import openslide
-        from openslide.deepzoom import DeepZoomGenerator
-    os.add_dll_directory(VIPS_BIN_PATH)
-else:
-    os.environ['PATH'] = os.pathsep.join((VIPS_BIN_PATH, os.environ['PATH']))
 
 # Increase maximum number of pixels that PIL can process
 PIL.Image.MAX_IMAGE_PIXELS = None 

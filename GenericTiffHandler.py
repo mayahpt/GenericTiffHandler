@@ -7,6 +7,10 @@ import zarr
 import dask.array as da
 import matplotlib.pyplot as plt
 import xml.etree.ElementTree as ET  # Needed for XML metadata processing
+from tqdm_joblib import ParallelPbar
+from joblib import delayed
+import glob
+import histomicstk as htk
 
 # Increase maximum number of pixels that PIL can process
 PIL.Image.MAX_IMAGE_PIXELS = None 
@@ -323,3 +327,71 @@ class GenericTiffHandler:
             self.tiff_image_dask_array = resized_image
         else:
             raise ValueError("Invalid method. Choose '1' or '2'.")
+    
+    def calculate_useful_tiles(self,tile_height,tile_width,overlap,
+                               tissue_mask_path=None, 
+                               tissue_percentage_threshold=25, cpu_workers=12):
+        
+        def process_tile(tile_params):
+            col, row, tissue_mask_path, tissue_masks, tile_height, tile_width, overlap, tissue_percentage_threshold = tile_params
+            if tissue_mask_path is None:
+                tile_tissue = tissue_masks[(col, row)]
+            else:
+                tissue_mask_obj = GenericTiffHandler(self.tissue_mask_path)
+                tile_tissue = np.asarray(tissue_mask_obj.get_tile(tile_height, tile_width, overlap, col, row))
+                # Debug: check if the tile is empty and log the details
+                if tile_tissue.size == 0:
+                    print(f"DEBUG: Empty tile from tissue mask file at col {col}, row {row}.")
+                    print(f"       Requested tile size: ({tile_height}, {tile_width}), overlap: {overlap}")
+                    print(f"       Tissue mask path: {tissue_mask_path}")
+                if np.max(tile_tissue) == 255:
+                    tile_tissue = tile_tissue / 255
+
+            tissue_percentage = (np.sum(tile_tissue) / (tile_tissue.shape[0] * tile_tissue.shape[1])) * 100
+            return (col, row) if tissue_percentage > tissue_percentage_threshold else None
+        
+        def __get_tissue_mask__(self,tile):
+            """Runs htk.segmentation.simple_mask in the main process before parallel execution."""
+            try:
+                return htk.segmentation.simple_mask(tile)
+            except:
+                return np.zeros(tile.shape[:2], dtype=np.uint8)  # Safe fallback
+        
+        assert self.path is not None, "The path to the image must be provided for this operation."
+        
+        dataset_path = os.path.dirname(os.path.dirname(self.path))
+        
+        if tissue_mask_path is None:
+            self.tissue_mask_path = glob.glob(os.path.join(dataset_path,'Tissue Masks',os.path.splitext(os.path.basename(self.path))[0]+'*.tiff'))
+            if len(self.tissue_mask_path) == 0:
+                self.tissue_mask_path = None
+            else:
+                self.tissue_mask_path = self.tissue_mask_path[0]
+        else:
+            self.tissue_mask_path = tissue_mask_path
+
+        Tiles_y, Tiles_x = self.get_tile_dimensions(tile_height, tile_width, overlap)
+
+        if self.tissue_mask_path is not None:        
+            tissue_masks = {}
+            if self.tissue_mask_path is None:
+                for col in range(Tiles_y):
+                    for row in range(Tiles_x):
+                        tile = np.asarray(self.get_tile(tile_height, tile_width, overlap, col, row, asImage=True))
+                        tissue_masks[(col, row)] = __get_tissue_mask__(tile)
+            
+            tile_params = [
+                (col, row, self.tissue_mask_path, tissue_masks, tile_height, tile_width, overlap, tissue_percentage_threshold)
+                for col in range(Tiles_y)
+                for row in range(Tiles_x)
+            ]
+            
+            results = ParallelPbar("Calculating useful tiles...")(n_jobs=cpu_workers, backend='threading')(
+                delayed(process_tile)(params) for params in tile_params
+            )
+            return [tile for tile in results if tile is not None]
+        else:
+            raise ValueError("Tissue mask path not found/provided.")
+
+    def get_current_path(self):
+        return self.path

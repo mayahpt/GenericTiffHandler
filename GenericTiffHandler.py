@@ -173,6 +173,7 @@ class GenericTiffHandler:
         Calculates the top-left coordinate and effective tile size for a given tile position.
         """
         image_dims = self.get_image_dimensions()
+        
         if len(image_dims) == 3:
             # Use first slice if image is volumetric
             _, image_height, image_width = image_dims
@@ -190,12 +191,12 @@ class GenericTiffHandler:
         coord_x = (pos_x * tile_width) - overlap if pos_x > 0 else 0
         
         if pos_y == tiles_y - 1:
-            effective_tile_height = image_height - coord_y
+            effective_tile_height = image_width - coord_y
         else:
             effective_tile_height = tile_height + (overlap if pos_y == 0 else 2 * overlap)
         
         if pos_x == tiles_x - 1:
-            effective_tile_width = image_width - coord_x
+            effective_tile_width = image_height - coord_x
         else:
             effective_tile_width = tile_width + (overlap if pos_x == 0 else 2 * overlap)
         

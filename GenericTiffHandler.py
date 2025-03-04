@@ -103,6 +103,7 @@ def standardize_shape(shape):
         raise ValueError(f"Unexpected shape: {shape}")
 
 #-------------------------------------------------------------------
+# To be implemented: Initiate with a normal array as well
 class GenericTiffHandler:
     """
     Handler for TIFF files supporting lazy loading as Dask arrays.
@@ -139,9 +140,28 @@ class GenericTiffHandler:
         self.ogMpp = None
         self.currentMag = None
         self.currentMpp = None
+        self.tissue_mask_path = None
 
     @classmethod
     def from_dask_array(cls, tiff_image_dask_array):
+        """
+        Create an instance of the class from a Dask array.
+
+        Parameters:
+        -----------
+        tiff_image_dask_array : dask.array.core.Array
+            A Dask array representing the TIFF image.
+
+        Returns:
+        --------
+        GenericTiffHandler
+            An instance of the GenericTiffHandler class initialized with the given Dask array.
+        
+        Practical Example
+        --------
+        GenericTiffHandler.from_dask_array(tiff_image_dask_array)
+        
+        """
         return cls(tiff_image_dask_array=tiff_image_dask_array)
     
     def get_tile_dimensions(self, tile_height, tile_width, overlap):
@@ -395,3 +415,44 @@ class GenericTiffHandler:
 
     def get_current_path(self):
         return self.path
+    
+    def save_to_tiff_with_metadata(self):
+        # Not implemented
+        # If path -> Pyvips reading from path
+        # If starting from dask array:
+            # Only if the dask array is a 2D image (binary) for the computation sake
+        
+        '''# Add metadata to pyvipsImage
+        pyvipsImageTemp = pyvipsImage.copy()
+        image_height = pyvipsImageTemp.height
+        image_bands = pyvipsImageTemp.bands
+        image_width = pyvipsImageTemp.width
+                
+        pyvipsImageTemp = pyvipsImage.copy()
+        pyvipsImageTemp.set_type(pyvips.GValue.gint_type, "page-height", image_height)
+        pyvipsImageTemp.set_type(pyvips.GValue.gstr_type, "image-description",
+        f"""<?xml version="1.0" encoding="UTF-8"?>
+        <OME xmlns="http://www.openmicroscopy.org/Schemas/OME/2016-06"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:schemaLocation="http://www.openmicroscopy.org/Schemas/OME/2016-06 http://www.openmicroscopy.org/Schemas/OME/2016-06/ome.xsd">
+            <Image ID="Image:0">
+                <!-- Minimum required fields about image dimensions -->
+                <Pixels DimensionOrder="XYCZT"
+                        ID="Pixels:0"
+                        SizeC="{image_bands}"
+                        SizeT="1"
+                        SizeX="{image_width}"
+                        SizeY="{image_height}"
+                        SizeZ="1"
+                        Type="uint8">
+                </Pixels>
+            </Image>
+        </OME>""")
+
+        pyvipsImageTemp.tiffsave(pyvipsImage_path, compression="jpeg", tile=True,
+            tile_width=512, tile_height=512, Q=100,
+            pyramid=True, subifd=True)
+        
+        return True'''
+        
+        return

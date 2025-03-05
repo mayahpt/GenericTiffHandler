@@ -377,14 +377,16 @@ class GenericTiffHandler:
     
     def calculate_useful_tiles(self,tile_height,tile_width,overlap,
                                tissue_mask_path=None, 
-                               tissue_percentage_threshold=25, cpu_workers=12):
+                               tissue_percentage_threshold=25, cpu_workers=12, mode='naive',grid_step=4):
+        
+        assert mode in ['naive','faster']
         
         def process_tile(tile_params):
             col, row, tissue_mask_path, tissue_masks, tile_height, tile_width, overlap, tissue_percentage_threshold = tile_params
             if tissue_mask_path is None:
                 tile_tissue = tissue_masks[(col, row)]
             else:
-                tissue_mask_obj = GenericTiffHandler(self.tissue_mask_path)
+                tissue_mask_obj = GenericTiffHandler(tissue_mask_path)
                 tile_tissue = np.asarray(tissue_mask_obj.get_tile(tile_height, tile_width, overlap, col, row))
                 # Debug: check if the tile is empty and log the details
                 if tile_tissue.size == 0:
@@ -405,7 +407,7 @@ class GenericTiffHandler:
                 return np.zeros(tile.shape[:2], dtype=np.uint8)  # Safe fallback
         
         assert self.path is not None, "The path to the image must be provided for this operation."
-        
+    
         dataset_path = os.path.dirname(os.path.dirname(self.path))
         
         if tissue_mask_path is None:
@@ -418,27 +420,60 @@ class GenericTiffHandler:
             self.tissue_mask_path = tissue_mask_path
 
         Tiles_y, Tiles_x = self.get_tile_dimensions(tile_height, tile_width, overlap)
+      
+        tissue_masks = {}
+        if self.tissue_mask_path is None:
+            for col in range(Tiles_y):
+                for row in range(Tiles_x):
+                    tile = np.asarray(self.get_tile(tile_height, tile_width, overlap, col, row, asImage=True))
+                    tissue_masks[(col, row)] = __get_tissue_mask__(tile)
+        elif self.tissue_mask_path is not None:
+            if mode=='naive':
+                tile_params = [
+                    (col, row, self.tissue_mask_path, tissue_masks, tile_height, tile_width, overlap, tissue_percentage_threshold)
+                    for col in range(Tiles_y)
+                    for row in range(Tiles_x)
+                ]
+                
+                results = ParallelPbar("Calculating useful tiles...")(n_jobs=cpu_workers, backend='loky')(
+                    delayed(process_tile)(params) for params in tile_params
+                )
+                return [tile for tile in results if tile is not None]
+            elif mode == 'faster':
+                ### 🔹 Step 2: Coarse Grid Search (Initial Fast Scan)
+                initial_tiles = [
+                    (col, row, self.tissue_mask_path, tissue_masks, tile_height, tile_width, overlap, tissue_percentage_threshold)
+                    for col in range(0, Tiles_y, grid_step)
+                    for row in range(0, Tiles_x, grid_step)
+                ]
+                
+                coarse_results = ParallelPbar("Selecting coarse results...")(n_jobs=cpu_workers, backend='loky')(
+                    delayed(process_tile)(params) for params in initial_tiles
+                )
+                
+                # Remove None values and keep only valid tiles
+                refined_candidates = [tile for tile in coarse_results if tile is not None]
+                
+                ### 🔹 Step 3: Expand Search Around Found Tiles
+                candidate_tiles = set()
+                for col, row in refined_candidates:
+                    for dx in range(-grid_step + 1, grid_step):
+                        for dy in range(-grid_step + 1, grid_step):
+                            new_col, new_row = col + dx, row + dy
+                            if 0 <= new_col < Tiles_y and 0 <= new_row < Tiles_x:
+                                candidate_tiles.add((new_col, new_row))
+                
+                ### 🔹 Step 4: Run Parallel Processing for Refinement
+                final_tiles = ParallelPbar("Creating refined selection...")(n_jobs=cpu_workers, backend='loky')(
+                    delayed(process_tile)((col, row, self.tissue_mask_path,tissue_masks, tile_height, tile_width, overlap, tissue_percentage_threshold))
+                    for col, row in candidate_tiles
+                )
 
-        if self.tissue_mask_path is not None:        
-            tissue_masks = {}
-            if self.tissue_mask_path is None:
-                for col in range(Tiles_y):
-                    for row in range(Tiles_x):
-                        tile = np.asarray(self.get_tile(tile_height, tile_width, overlap, col, row, asImage=True))
-                        tissue_masks[(col, row)] = __get_tissue_mask__(tile)
+                # Remove None values and return the final tile selection
+                return [tile for tile in final_tiles if tile is not None]
             
-            tile_params = [
-                (col, row, self.tissue_mask_path, tissue_masks, tile_height, tile_width, overlap, tissue_percentage_threshold)
-                for col in range(Tiles_y)
-                for row in range(Tiles_x)
-            ]
-            
-            results = ParallelPbar("Calculating useful tiles...")(n_jobs=cpu_workers, backend='threading')(
-                delayed(process_tile)(params) for params in tile_params
-            )
-            return [tile for tile in results if tile is not None]
-        else:
-            raise ValueError("Tissue mask path not found/provided.")
+            else:
+                raise ValueError("Tissue mask path not found/provided.")
 
     def get_current_path(self):
         return self.path

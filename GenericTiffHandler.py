@@ -129,6 +129,7 @@ class GenericTiffHandler:
 
             if ext in SIMPLER_FILETYPES:
                 with tifffile.TiffFile(self.path) as tiff_image:
+                    self.tiff_image = tiff_image
                     tiff_image_store = tiff_image.aszarr(level=0)
                 tiff_image = zarr.open(tiff_image_store, mode='r')
                 self.image_array = da.from_zarr(tiff_image)
@@ -136,6 +137,7 @@ class GenericTiffHandler:
                     self.image_array = self.image_array[channel]
             elif ext in COMPLEX_FILETYPES:
                 with tifffile.TiffFile(self.path) as tiff_image:
+                    self.tiff_image = tiff_image
                     tiff_image_store = tiff_image.pages[3].aszarr(level=0)
                 tiff_image = zarr.open(tiff_image_store, mode='r')
                 self.image_array = da.from_zarr(tiff_image)
@@ -151,8 +153,14 @@ class GenericTiffHandler:
         self.ogMpp = None
         self.currentMag = None
         self.currentMpp = None
+        
+        if self.path:
+            self.ogMag = self.get_original_magnification(os.path.splitext(os.path.basename(self.path))[-1])
+            self.ogMpp = self.get_original_pixel_size(os.path.splitext(os.path.basename(self.path))[-1])
+            self.currentMag = self.ogMag
+            self.currentMpp = self.ogMpp
+        
         self.tissue_mask_path = None
-
         if hasattr(self.image_array,'chunks'):
             self.isDaskArray = True
         else:
@@ -278,7 +286,7 @@ class GenericTiffHandler:
             return np.zeros_like(mask, dtype=np.uint8)
         return (mask - min_val) / (max_val - min_val)
 
-    def get_original_magnification(self, filetype):
+    def get_original_magnification(self, filetype,verbose=False):
         """
         Retrieves the original magnification from image metadata based on file type.
         """
@@ -298,10 +306,11 @@ class GenericTiffHandler:
             elif filetype == '.ndpi':
                 return int(self.tiff_image.pages[0].tags[65421].value)
             else:
-                print("No metadata available for this file type.")
+                if verbose:
+                    print("No metadata available for this file type.")
             return None
     
-    def get_original_pixel_size(self, filetype):
+    def get_original_pixel_size(self, filetype,verbose=False):
         """
         Retrieves the original pixel size (MPP) from image metadata based on file type.
         """
@@ -323,7 +332,8 @@ class GenericTiffHandler:
                 pixel_size = (10000 / x_res, 10000 / y_res)
                 return np.unique(pixel_size)
             else:
-                print("Could not find metadata information for this file type.")
+                if verbose:
+                    print("Could not find metadata information for this file type.")
                 return None
     
     def get_current_magnification(self):
@@ -382,11 +392,13 @@ class GenericTiffHandler:
         assert mode in ['naive','faster']
         
         def process_tile(tile_params):
-            col, row, tissue_mask_path, tissue_masks, tile_height, tile_width, overlap, tissue_percentage_threshold = tile_params
+            col, row, tissue_mask_path, tissue_masks, tile_height, tile_width, overlap, tissue_percentage_threshold,ogMag,ogMpp,currentMag,currentMpp = tile_params
             if tissue_mask_path is None:
                 tile_tissue = tissue_masks[(col, row)]
             else:
                 tissue_mask_obj = GenericTiffHandler(tissue_mask_path)
+                tissue_mask_obj.set_magnification_settings(mag=ogMag,mpp=ogMpp)
+                tissue_mask_obj.convert_between_magnification(currentMag, method='1')
                 tile_tissue = np.asarray(tissue_mask_obj.get_tile(tile_height, tile_width, overlap, col, row))
                 # Debug: check if the tile is empty and log the details
                 if tile_tissue.size == 0:
@@ -430,7 +442,7 @@ class GenericTiffHandler:
         elif self.tissue_mask_path is not None:
             if mode=='naive':
                 tile_params = [
-                    (col, row, self.tissue_mask_path, tissue_masks, tile_height, tile_width, overlap, tissue_percentage_threshold)
+                    (col, row, self.tissue_mask_path, tissue_masks, tile_height, tile_width, overlap, tissue_percentage_threshold,self.ogMag,self.ogMpp,self.currentMag,self.currentMpp)
                     for col in range(Tiles_y)
                     for row in range(Tiles_x)
                 ]
@@ -442,7 +454,7 @@ class GenericTiffHandler:
             elif mode == 'faster':
                 ### 🔹 Step 2: Coarse Grid Search (Initial Fast Scan)
                 initial_tiles = [
-                    (col, row, self.tissue_mask_path, tissue_masks, tile_height, tile_width, overlap, tissue_percentage_threshold)
+                    (col, row, self.tissue_mask_path, tissue_masks, tile_height, tile_width, overlap, tissue_percentage_threshold,self.ogMag,self.ogMpp,self.currentMag,self.currentMpp)
                     for col in range(0, Tiles_y, grid_step)
                     for row in range(0, Tiles_x, grid_step)
                 ]
@@ -465,7 +477,7 @@ class GenericTiffHandler:
                 
                 ### 🔹 Step 4: Run Parallel Processing for Refinement
                 final_tiles = ParallelPbar("Creating refined selection...")(n_jobs=cpu_workers, backend='loky')(
-                    delayed(process_tile)((col, row, self.tissue_mask_path,tissue_masks, tile_height, tile_width, overlap, tissue_percentage_threshold))
+                    delayed(process_tile)((col, row, self.tissue_mask_path,tissue_masks, tile_height, tile_width, overlap, tissue_percentage_threshold,self.ogMag,self.ogMpp,self.currentMag,self.currentMpp))
                     for col, row in candidate_tiles
                 )
 
@@ -480,6 +492,12 @@ class GenericTiffHandler:
     
     def is_dask_array(self):
         return self.isDaskArray
+    
+    def set_magnification_settings(self, mag, mpp):
+        self.ogMag = mag
+        self.ogMpp = mpp
+        self.currentMag = mag
+        self.currentMpp = mpp
     
     def save_to_tiff_with_metadata(self, saving_path=None):
         VIPS_HOME = glob.glob(r"Utils/VIPS*")

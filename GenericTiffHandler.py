@@ -11,11 +11,19 @@ from tqdm_joblib import ParallelPbar
 from joblib import delayed
 import glob
 import histomicstk as htk
+import pathlib
+import LnkParse3
 
 # Increase maximum number of pixels that PIL can process
 PIL.Image.MAX_IMAGE_PIXELS = None 
 
 #-------------------------------------------------------------------
+def get_source_lnk_abspath(lnk_path):
+    with open(pathlib.PureWindowsPath(os.path.abspath(lnk_path)).as_posix(),"rb") as indata:
+        lnk = LnkParse3.lnk_file(indata)
+        
+        return lnk.info.local_base_path()
+    
 def standardize_image_for_display(image):
     """
     Prepares an image for display by selecting an appropriate slice and reordering dimensions.
@@ -103,13 +111,16 @@ def standardize_shape(shape):
         raise ValueError(f"Unexpected shape: {shape}")
 
 #-------------------------------------------------------------------
-# To be implemented: Initiate with a normal array as well
 class GenericTiffHandler:
     """
     Handler for TIFF files supporting lazy loading as Dask arrays.
     Capable of processing both simple and complex TIFF formats.
     """
-    def __init__(self, path=None, tiff_image_dask_array=None, channel=None):
+    def __init__(self, path=None, image_array=None, channel=None):
+        
+        self.path = None
+        self.image_array = None
+
         if path:
             self.path = path
             SIMPLER_FILETYPES = {'.tif', '.tiff', '.svs', '.ndpi'}
@@ -120,20 +131,20 @@ class GenericTiffHandler:
                 with tifffile.TiffFile(self.path) as tiff_image:
                     tiff_image_store = tiff_image.aszarr(level=0)
                 tiff_image = zarr.open(tiff_image_store, mode='r')
-                self.tiff_image_dask_array = da.from_zarr(tiff_image)
+                self.image_array = da.from_zarr(tiff_image)
                 if channel is not None:
-                    self.tiff_image_dask_array = self.tiff_image_dask_array[channel]
+                    self.image_array = self.image_array[channel]
             elif ext in COMPLEX_FILETYPES:
                 with tifffile.TiffFile(self.path) as tiff_image:
                     tiff_image_store = tiff_image.pages[3].aszarr(level=0)
                 tiff_image = zarr.open(tiff_image_store, mode='r')
-                self.tiff_image_dask_array = da.from_zarr(tiff_image)
+                self.image_array = da.from_zarr(tiff_image)
             else:
                 raise ValueError("Unsupported file type.")
-        elif tiff_image_dask_array is not None:
-            self.tiff_image_dask_array = tiff_image_dask_array
+        elif image_array is not None:
+            self.image_array = image_array
         else:
-            raise ValueError("Either 'path' or 'tiff_image_dask_array' must be provided.")
+            raise ValueError("Either 'path' or 'image_array' must be provided.")
 
         # Initialize metadata attributes (if available)
         self.ogMag = None
@@ -142,33 +153,38 @@ class GenericTiffHandler:
         self.currentMpp = None
         self.tissue_mask_path = None
 
+        if hasattr(self.image_array,'chunks'):
+            self.isDaskArray = True
+        else:
+            self.isDaskArray = False
+
     @classmethod
-    def from_dask_array(cls, tiff_image_dask_array):
+    def from_array(cls, image_array):
         """
-        Create an instance of the class from a Dask array.
+        Create an instance of the class from a Dask array or a NumPy array.
 
         Parameters:
         -----------
-        tiff_image_dask_array : dask.array.core.Array
-            A Dask array representing the TIFF image.
+        image_array : dask.array.core.Array or numpy.ndarray
+            An array representing the TIFF image.
 
         Returns:
         --------
         GenericTiffHandler
-            An instance of the GenericTiffHandler class initialized with the given Dask array.
+            An instance of the GenericTiffHandler class initialized with the given array.
         
         Practical Example
         --------
-        GenericTiffHandler.from_dask_array(tiff_image_dask_array)
+        GenericTiffHandler.from_array(image_array)
         
         """
-        return cls(tiff_image_dask_array=tiff_image_dask_array)
-    
+        return cls(image_array=image_array)
+
     def get_tile_dimensions(self, tile_height, tile_width, overlap):
         """
         Calculates the number of tiles along y and x dimensions.
         """
-        slide_dims = standardize_shape(np.shape(self.tiff_image_dask_array))
+        slide_dims = standardize_shape(np.shape(self.image_array))
         if len(slide_dims) == 3:  # e.g. (z, height, width)
             _, width, height = slide_dims
         else:
@@ -182,14 +198,18 @@ class GenericTiffHandler:
         """
         Returns standardized spatial dimensions of the image.
         """
-        return standardize_shape(np.shape(self.tiff_image_dask_array))
+        return standardize_shape(np.shape(self.image_array))
     
     def get_thumbnail(self, thumbnail_size):
         """
         Generates a thumbnail by downsampling the image.
         """
-        thumbnail = standardize_image_for_display(self.tiff_image_dask_array)[::thumbnail_size, ::thumbnail_size]
-        thumbnail = thumbnail.compute()
+        thumbnail = standardize_image_for_display(self.image_array)[::thumbnail_size, ::thumbnail_size]
+        if self.isDaskArray:
+            thumbnail = thumbnail.compute()
+        else:
+            thumbnail = thumbnail
+
         return Image.fromarray(thumbnail)
     
     def getCoordinatesForTile(self, pos_y, pos_x, tile_height, tile_width, overlap):        
@@ -230,16 +250,19 @@ class GenericTiffHandler:
         """
         Extracts a tile from the image given tile dimensions, overlap, and position.
         """
-        slide = standardize_image_for_display(self.tiff_image_dask_array)
+        slide = standardize_image_for_display(self.image_array)
         coord_y, coord_x, eff_tile_height, eff_tile_width = self.getCoordinatesForTile(y, x, tile_height, tile_width, overlap)
         
         if len(slide.shape) == 2:
-            tile = slide[coord_x:(coord_x + eff_tile_width), coord_y:(coord_y + eff_tile_height)]
+                tile = slide[coord_x:(coord_x + eff_tile_width), coord_y:(coord_y + eff_tile_height)]
         elif len(slide.shape) == 3:
-            tile = slide[coord_x:(coord_x + eff_tile_width), coord_y:(coord_y + eff_tile_height), :]
-        
+                tile = slide[coord_x:(coord_x + eff_tile_width), coord_y:(coord_y + eff_tile_height), :]
+
         if asImage:
-            tile = tile.compute(scheduler='threads')
+            if self.isDaskArray:
+                tile = tile.compute(scheduler='threads')
+            else:
+                tile = tile
             return Image.fromarray(tile)
         else:
             return tile
@@ -333,18 +356,22 @@ class GenericTiffHandler:
         
         conversion_factor = self.currentMag / target_magnification
         if method == '1':
-            self.tiff_image_dask_array = self.tiff_image_dask_array[::int(conversion_factor), ::int(conversion_factor)]
+            self.image_array = self.image_array[::int(conversion_factor), ::int(conversion_factor)]
             self.currentMag = target_magnification
             self.currentMpp = self.currentMpp * conversion_factor
         elif method == '2':
-            new_height = int(self.tiff_image_dask_array.shape[0] / conversion_factor)
-            new_width = int(self.tiff_image_dask_array.shape[1] / conversion_factor)
-            row_indices = (da.arange(new_height) * conversion_factor).astype(int)
-            col_indices = (da.arange(new_width) * conversion_factor).astype(int)
-            resized_image = self.tiff_image_dask_array[row_indices][:, col_indices]
+            new_height = int(self.image_array.shape[0] / conversion_factor)
+            new_width = int(self.image_array.shape[1] / conversion_factor)
+            if self.is_dask_array():
+                row_indices = (da.arange(new_height) * conversion_factor).astype(int)
+                col_indices = (da.arange(new_width) * conversion_factor).astype(int)
+            else:
+                row_indices = (np.arange(new_height) * conversion_factor).astype(int)
+                col_indices = (np.arange(new_width) * conversion_factor).astype(int)
+            resized_image = self.image_array[row_indices][:, col_indices]
             self.currentMag = target_magnification
             self.currentMpp = self.currentMpp * conversion_factor
-            self.tiff_image_dask_array = resized_image
+            self.image_array = resized_image
         else:
             raise ValueError("Invalid method. Choose '1' or '2'.")
     
@@ -416,43 +443,78 @@ class GenericTiffHandler:
     def get_current_path(self):
         return self.path
     
-    def save_to_tiff_with_metadata(self):
-        # Not implemented
-        # If path -> Pyvips reading from path
-        # If starting from dask array:
-            # Only if the dask array is a 2D image (binary) for the computation sake
-        
-        '''# Add metadata to pyvipsImage
-        pyvipsImageTemp = pyvipsImage.copy()
-        image_height = pyvipsImageTemp.height
-        image_bands = pyvipsImageTemp.bands
-        image_width = pyvipsImageTemp.width
-                
-        pyvipsImageTemp = pyvipsImage.copy()
-        pyvipsImageTemp.set_type(pyvips.GValue.gint_type, "page-height", image_height)
-        pyvipsImageTemp.set_type(pyvips.GValue.gstr_type, "image-description",
-        f"""<?xml version="1.0" encoding="UTF-8"?>
-        <OME xmlns="http://www.openmicroscopy.org/Schemas/OME/2016-06"
-            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-            xsi:schemaLocation="http://www.openmicroscopy.org/Schemas/OME/2016-06 http://www.openmicroscopy.org/Schemas/OME/2016-06/ome.xsd">
-            <Image ID="Image:0">
-                <!-- Minimum required fields about image dimensions -->
-                <Pixels DimensionOrder="XYCZT"
-                        ID="Pixels:0"
-                        SizeC="{image_bands}"
-                        SizeT="1"
-                        SizeX="{image_width}"
-                        SizeY="{image_height}"
-                        SizeZ="1"
-                        Type="uint8">
-                </Pixels>
-            </Image>
-        </OME>""")
+    def is_dask_array(self):
+        return self.isDaskArray
+    
+    def save_to_tiff_with_metadata(self, saving_path=None):
+        VIPS_HOME = glob.glob(r"Utils/VIPS*")
 
-        pyvipsImageTemp.tiffsave(pyvipsImage_path, compression="jpeg", tile=True,
-            tile_width=512, tile_height=512, Q=100,
-            pyramid=True, subifd=True)
-        
-        return True'''
-        
-        return
+        if len(VIPS_HOME) == 0:
+            raise ValueError("VIPS_HOME not found. Please install VIPS and set the environment variable.")
+        else:
+            VIPS_HOME = VIPS_HOME[0]
+            if VIPS_HOME.endswith('lnk'):
+                VIPS_HOME = os.path.dirname(glob.glob(os.path.join(get_source_lnk_abspath(VIPS_HOME),"*","**", "vips.exe"),recursive=True)[0])
+            os.environ['PATH'] = VIPS_HOME + ';' + os.environ['PATH']
+            
+            import pyvips  # Local import to avoid global dependency issues
+            
+            if saving_path is None:
+                raise ValueError("A saving_path must be provided.")
+            
+            # Create a pyvips image based on the available data:
+            if self.path is not None:
+                # Read via pyvips from the file path
+                pyvipsImage = pyvips.Image.new_from_file(self.path, access="sequential")
+            else:
+                # Use the image_array. Only 2D images (binary) are supported.
+                if self.isDaskArray:
+                    if len(self.image_array.shape) != 2:
+                        raise ValueError("Only 2D dask array images are supported for saving.")
+                    array = self.image_array.compute()
+                else:
+                    if len(self.image_array.shape) != 2:
+                        raise ValueError("Only 2D images are supported for saving.")
+                    array = self.image_array
+                
+                # Convert the numpy array to a pyvips image.
+                height, width = array.shape
+                bands = 1  # For binary/2D image, only one band is present
+                fmt = 'uchar'
+                array_bytes = array.tobytes()
+                pyvipsImage = pyvips.Image.new_from_memory(array_bytes, width, height, bands, fmt)
+            
+            # Copy image to add metadata
+            pyvipsImageTemp = pyvipsImage.copy()
+            image_height = pyvipsImageTemp.height
+            image_width = pyvipsImageTemp.width
+            image_bands = pyvipsImageTemp.bands
+            
+            # Construct XML metadata
+            xml_str = f"""<?xml version="1.0" encoding="UTF-8"?>
+    <OME xmlns="http://www.openmicroscopy.org/Schemas/OME/2016-06"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.openmicroscopy.org/Schemas/OME/2016-06 http://www.openmicroscopy.org/Schemas/OME/2016-06/ome.xsd">
+        <Image ID="Image:0">
+            <Pixels DimensionOrder="XYCZT"
+                    ID="Pixels:0"
+                    SizeC="{image_bands}"
+                    SizeT="1"
+                    SizeX="{image_width}"
+                    SizeY="{image_height}"
+                    SizeZ="1"
+                    Type="uint8">
+            </Pixels>
+        </Image>
+    </OME>"""
+            
+            # Set the metadata parameters
+            pyvipsImageTemp.set_type(pyvips.GValue.gint_type, "page-height", image_height)
+            pyvipsImageTemp.set_type(pyvips.GValue.gstr_type, "image-description", xml_str)
+            
+            # Save the image as a TIFF with metadata, tiling, and pyramid structure.
+            pyvipsImageTemp.tiffsave(saving_path, compression="jpeg", tile=True,
+                                    tile_width=512, tile_height=512, Q=100,
+                                    pyramid=True, subifd=True)
+            
+            return True

@@ -455,6 +455,8 @@ class GenericTiffHandler:
             VIPS_HOME = VIPS_HOME[0]
             if VIPS_HOME.endswith('lnk'):
                 VIPS_HOME = os.path.dirname(glob.glob(os.path.join(get_source_lnk_abspath(VIPS_HOME),"*","**", "vips.exe"),recursive=True)[0])
+            else:
+                VIPS_HOME = os.path.dirname(glob.glob(os.path.join(VIPS_HOME,"*","**", "vips.exe"),recursive=True)[0])
             os.environ['PATH'] = VIPS_HOME + ';' + os.environ['PATH']
             
             import pyvips  # Local import to avoid global dependency issues

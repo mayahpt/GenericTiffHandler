@@ -274,6 +274,23 @@ class GenericTiffHandler:
             return Image.fromarray(tile)
         else:
             return tile
+        
+    def get_tile_from_coordinates(self,x1,y1,x2,y2, asImage=True):
+        slide = standardize_image_for_display(self.image_array)
+
+        if len(slide.shape) == 2:
+            tile = slide[y1:y2, x1:x2]
+        elif len(slide.shape) == 3:
+            tile = slide[y1:y2, x1:x2, :]
+        
+        if asImage:
+            if self.isDaskArray:
+                tile = tile.compute(scheduler='threads')
+            else:
+                tile = tile
+            return Image.fromarray(tile)
+        else:
+            return tile
     
     def getNormalizedMask(self, mask):
         """

@@ -13,6 +13,7 @@ import glob
 import histomicstk as htk
 import pathlib
 import LnkParse3
+from skimage.measure import label, regionprops
 
 # Increase maximum number of pixels that PIL can process
 PIL.Image.MAX_IMAGE_PIXELS = None 
@@ -131,16 +132,17 @@ class GenericTiffHandler:
                 with tifffile.TiffFile(self.path) as tiff_image:
                     self.tiff_image = tiff_image
                     tiff_image_store = tiff_image.aszarr(level=0)
-                tiff_image = zarr.open(tiff_image_store, mode='r')
-                self.image_array = da.from_zarr(tiff_image)
+                tiff_image_zarr = zarr.open(tiff_image_store, mode='r')
+                self.image_array = da.from_zarr(tiff_image_zarr)
                 if channel is not None:
                     self.image_array = self.image_array[channel]
             elif ext in COMPLEX_FILETYPES:
                 with tifffile.TiffFile(self.path) as tiff_image:
                     self.tiff_image = tiff_image
-                    tiff_image_store = tiff_image.pages[3].aszarr(level=0)
-                tiff_image = zarr.open(tiff_image_store, mode='r')
-                self.image_array = da.from_zarr(tiff_image)
+                    #tiff_image_store = tiff_image.pages[3].aszarr(level=0)
+                    tiff_image_store = tiff_image.series[1].pages[0].aszarr(level=0)
+                tiff_image_zarr = zarr.open(tiff_image_store, mode='r')
+                self.image_array = da.from_zarr(tiff_image_zarr)
             else:
                 raise ValueError("Unsupported file type.")
         elif image_array is not None:
@@ -335,8 +337,8 @@ class GenericTiffHandler:
             return self.ogMpp
         else:
             if filetype == '.scn':
-                x_res = self.tiff_image.pages[3].tags['XResolution'].value[0]
-                y_res = self.tiff_image.pages[3].tags['YResolution'].value[0]
+                x_res = self.tiff_image.series[1].pages[0].tags['XResolution'].value[0]
+                y_res = self.tiff_image.series[1].pages[0].tags['YResolution'].value[0]
                 pixel_size = (10000 / x_res, 10000 / y_res)
                 return np.unique(pixel_size)
             elif filetype == '.svs':
@@ -404,9 +406,52 @@ class GenericTiffHandler:
     
     def calculate_useful_tiles(self,tile_height,tile_width,overlap,
                                tissue_mask_path=None, 
-                               tissue_percentage_threshold=25, cpu_workers=12, mode='naive',grid_step=4):
+                               tissue_percentage_threshold=25, cpu_workers=12, mode='newer',grid_step=4):
         
-        assert mode in ['naive','faster']
+        assert mode in ['naive','faster','newer']
+        
+        def get_tiles_in_bbox(
+            bbox_ymin, bbox_xmin, bbox_ymax, bbox_xmax,
+            tile_height, tile_width, overlap
+        ):
+            """
+            Returns a list of (pos_y, pos_x) tile indices that intersect with the given bounding box.
+            
+            The bounding box is given in the same coordinate space as your entire image, i.e.
+            (bbox_ymin, bbox_xmin, bbox_ymax, bbox_xmax).
+            """
+            # 1) Determine how many tiles exist in Y and X
+            tiles_y, tiles_x = MaskObject.get_tile_dimensions(tile_height, tile_width, overlap)
+            
+            # 2) Prepare a container for all tile positions that intersect with the bbox
+            intersecting_tiles = []
+            
+            # 3) Iterate over all possible tile positions
+            for pos_y in range(tiles_y):
+                for pos_x in range(tiles_x):
+                    # Use your existing function to get the tile's bounding region
+                    tile_y, tile_x, eff_tile_h, eff_tile_w = MaskObject.getCoordinatesForTile(
+                        pos_y, pos_x, tile_height, tile_width, overlap
+                    )
+                    # Compute tile's bounding box
+                    tile_ymax = tile_y + eff_tile_h
+                    tile_xmax = tile_x + eff_tile_w
+                    
+                    # 4) Check if the tile bounding box overlaps the given bbox.
+                    # One common overlap check is:
+                    #   overlap exists if (not) ( tile is completely left OR above OR right OR below the bbox )
+                    # i.e. overlap if tile_y < bbox_ymax and tile_ymax > bbox_ymin etc.
+                    
+                    if not (
+                        tile_ymax <= bbox_ymin  # tile is completely above
+                        or tile_y >= bbox_ymax  # tile is completely below
+                        or tile_xmax <= bbox_xmin  # tile is completely left
+                        or tile_x >= bbox_xmax     # tile is completely right
+                    ):
+                        # We have some overlap
+                        intersecting_tiles.append((pos_y, pos_x))
+            
+            return intersecting_tiles
         
         def process_tile(tile_params):
             col, row, tissue_mask_path, tissue_masks, tile_height, tile_width, overlap, tissue_percentage_threshold,ogMag,ogMpp,currentMag,currentMpp = tile_params
@@ -454,7 +499,7 @@ class GenericTiffHandler:
         if self.tissue_mask_path is None:
             for col in range(Tiles_y):
                 for row in range(Tiles_x):
-                    tile = np.asarray(self.get_tile(tile_height, tile_width, overlap, col, row, asImage=True))
+                    tile = np.asarray(self.get_tile(tile_height, tile_width, overlap, col, row, asImage=True).resize((512,512)))
                     tissue_masks[(col, row)] = __get_tissue_mask__(tile)
         elif self.tissue_mask_path is not None:
             if mode=='naive':
@@ -500,6 +545,44 @@ class GenericTiffHandler:
 
                 # Remove None values and return the final tile selection
                 return [tile for tile in final_tiles if tile is not None]
+            elif mode == 'newer':
+                if self.path is not None:
+
+                    MaskObject = GenericTiffHandler(self.tissue_mask_path)
+                    if MaskObject.get_original_pixel_size(os.path.splitext(os.path.basename(tissue_mask_path))[-1]) is None:
+                        MaskObject.set_magnification_settings(self.get_original_magnification(
+                            os.path.splitext(os.path.basename(tissue_mask_path))[-1]
+                        ), self.get_original_pixel_size(
+                            os.path.splitext(os.path.basename(tissue_mask_path))[-1]
+                        ))
+                    MaskObject.convert_between_magnification(self.currentMag)
+                    downsampling_factor = 20
+                    mask_downsampled = MaskObject.get_thumbnail(downsampling_factor)
+                    
+                    mask_label = label(np.asarray(mask_downsampled))
+                    regions = regionprops(mask_label)
+
+                    bboxes =  [region.bbox for region in regions]
+                    bboxes_original = [(bbox[0]*downsampling_factor-100, bbox[1]*downsampling_factor-100, bbox[2]*downsampling_factor+100, bbox[3]*downsampling_factor+100) for bbox in bboxes]
+                    bboxes_origal_reshaped = [(bbox[1], bbox[0], bbox[3], bbox[2]) for bbox in bboxes_original]
+
+                    # Get the tiles that are included in the bounding boxes
+                    candidate_tiles = []
+                    for bbox in bboxes_origal_reshaped:
+                        candidate_tiles.append(get_tiles_in_bbox(*bbox, tile_height, tile_width, overlap))
+                    candidate_tiles = [item for sublist in candidate_tiles for item in sublist]
+                    candidate_tiles = list(set(candidate_tiles))
+
+                    # Run parallel processing for refinement
+                    final_tiles = ParallelPbar("Creating refined selection...")(n_jobs=cpu_workers, backend='loky')(
+                        delayed(process_tile)((col, row, self.tissue_mask_path,tissue_masks, tile_height, tile_width, overlap, tissue_percentage_threshold,self.ogMag,self.ogMpp,self.currentMag,self.currentMpp))
+                        for col, row in candidate_tiles
+                    )
+
+                    return [tile for tile in final_tiles if tile is not None]
+
+                else:
+                    self.calculate_useful_tiles(tile_height, tile_width, overlap, tissue_mask_path, tissue_percentage_threshold, cpu_workers, mode='naive')
             
             else:
                 raise ValueError("Tissue mask path not found/provided.")
@@ -585,7 +668,7 @@ class GenericTiffHandler:
             pyvipsImageTemp.set_type(pyvips.GValue.gstr_type, "image-description", xml_str)
             
             # Save the image as a TIFF with metadata, tiling, and pyramid structure.
-            pyvipsImageTemp.tiffsave(saving_path, compression="jpeg", tile=True,
+            pyvipsImageTemp.tiffsave(saving_path, compression="lzw", tile=True,
                                     tile_width=512, tile_height=512, Q=100,
                                     pyramid=True, subifd=True)
             

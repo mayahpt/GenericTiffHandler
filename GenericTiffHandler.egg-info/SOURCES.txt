@@ -1,0 +1,8 @@
+GenericTiffHandler.py
+README.md
+setup.py
+GenericTiffHandler.egg-info/PKG-INFO
+GenericTiffHandler.egg-info/SOURCES.txt
+GenericTiffHandler.egg-info/dependency_links.txt
+GenericTiffHandler.egg-info/requires.txt
+GenericTiffHandler.egg-info/top_level.txt

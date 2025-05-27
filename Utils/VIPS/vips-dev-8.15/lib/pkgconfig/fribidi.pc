@@ -1,9 +1,0 @@
-prefix=/data/mxe/usr/x86_64-w64-mingw32.shared.posix.web
-includedir=${prefix}/include
-libdir=${prefix}/lib
-
-Name: GNU FriBidi
-Description: Unicode Bidirectional Algorithm Library
-Version: 1.0.13
-Libs: -L${libdir} -lfribidi
-Cflags: -I${includedir}/fribidi

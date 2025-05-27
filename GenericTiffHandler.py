@@ -15,6 +15,8 @@ import pathlib
 import LnkParse3
 from skimage.measure import label, regionprops
 
+import pyvips
+
 # Increase maximum number of pixels that PIL can process
 PIL.Image.MAX_IMAGE_PIXELS = None 
 
@@ -600,44 +602,31 @@ class GenericTiffHandler:
         self.currentMpp = mpp
     
     def save_to_tiff_with_metadata(self, saving_path=None):
-        VIPS_HOME = glob.glob(r"Utils/VIPS*")
-
-        if len(VIPS_HOME) == 0:
-            raise ValueError("VIPS_HOME not found. Please install VIPS and set the environment variable.")
+        
+        if saving_path is None:
+            raise ValueError("A saving_path must be provided.")
+        
+        # Create a pyvips image based on the available data:
+        if self.path is not None:
+            # Read via pyvips from the file path
+            pyvipsImage = pyvips.Image.new_from_file(self.path, access="sequential")
         else:
-            VIPS_HOME = VIPS_HOME[0]
-            if VIPS_HOME.endswith('lnk'):
-                VIPS_HOME = os.path.dirname(glob.glob(os.path.join(get_source_lnk_abspath(VIPS_HOME),"*","**", "vips.exe"),recursive=True)[0])
+            # Use the image_array. Only 2D images (binary) are supported.
+            if self.isDaskArray:
+                if len(self.image_array.shape) != 2:
+                    raise ValueError("Only 2D dask array images are supported for saving.")
+                array = self.image_array.compute()
             else:
-                VIPS_HOME = os.path.dirname(glob.glob(os.path.join(VIPS_HOME,"*","**", "vips.exe"),recursive=True)[0])
-            os.environ['PATH'] = VIPS_HOME + ';' + os.environ['PATH']
+                if len(self.image_array.shape) != 2:
+                    raise ValueError("Only 2D images are supported for saving.")
+                array = self.image_array
             
-            import pyvips  # Local import to avoid global dependency issues
-            
-            if saving_path is None:
-                raise ValueError("A saving_path must be provided.")
-            
-            # Create a pyvips image based on the available data:
-            if self.path is not None:
-                # Read via pyvips from the file path
-                pyvipsImage = pyvips.Image.new_from_file(self.path, access="sequential")
-            else:
-                # Use the image_array. Only 2D images (binary) are supported.
-                if self.isDaskArray:
-                    if len(self.image_array.shape) != 2:
-                        raise ValueError("Only 2D dask array images are supported for saving.")
-                    array = self.image_array.compute()
-                else:
-                    if len(self.image_array.shape) != 2:
-                        raise ValueError("Only 2D images are supported for saving.")
-                    array = self.image_array
-                
-                # Convert the numpy array to a pyvips image.
-                height, width = array.shape
-                bands = 1  # For binary/2D image, only one band is present
-                fmt = 'uchar'
-                array_bytes = array.tobytes()
-                pyvipsImage = pyvips.Image.new_from_memory(array_bytes, width, height, bands, fmt)
+            # Convert the numpy array to a pyvips image.
+            height, width = array.shape
+            bands = 1  # For binary/2D image, only one band is present
+            fmt = 'uchar'
+            array_bytes = array.tobytes()
+            pyvipsImage = pyvips.Image.new_from_memory(array_bytes, width, height, bands, fmt)
             
             # Copy image to add metadata
             pyvipsImageTemp = pyvipsImage.copy()

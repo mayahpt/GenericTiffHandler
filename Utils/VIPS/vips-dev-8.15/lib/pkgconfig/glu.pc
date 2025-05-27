@@ -1,4 +1,0 @@
-Name: glu
-Version: 0
-Description: OpenGL
-Libs: -lglu32

@@ -6,7 +6,7 @@ HERE = pathlib.Path(__file__).parent
 
 # Automatically read the pip-installable dependencies from requirements.txt
 with open(HERE / "requirements.txt", encoding="utf-8") as f:
-    install_requires = [line.strip() for line in f if line.strip()]
+    install_requires = [line.strip()+"," for line in f if line.strip()]
 
 setup(
     name="GenericTiffHandler",

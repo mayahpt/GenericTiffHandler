@@ -8,12 +8,12 @@ import dask.array as da
 import matplotlib.pyplot as plt
 import xml.etree.ElementTree as ET  # Needed for XML metadata processing
 from tqdm_joblib import ParallelPbar
-from joblib import delayed
+from joblib import delayed,Parallel
 import glob
 import histomicstk as htk
 import pathlib
-import LnkParse3
 from skimage.measure import label, regionprops
+import dask
 
 import pyvips
 
@@ -21,12 +21,6 @@ import pyvips
 PIL.Image.MAX_IMAGE_PIXELS = None 
 
 #-------------------------------------------------------------------
-def get_source_lnk_abspath(lnk_path):
-    with open(pathlib.PureWindowsPath(os.path.abspath(lnk_path)).as_posix(),"rb") as indata:
-        lnk = LnkParse3.lnk_file(indata)
-        
-        return lnk.info.local_base_path()
-    
 def standardize_image_for_display(image):
     """
     Prepares an image for display by selecting an appropriate slice and reordering dimensions.
@@ -135,7 +129,7 @@ class GenericTiffHandler:
                     self.tiff_image = tiff_image
                     tiff_image_store = tiff_image.aszarr(level=0)
                 tiff_image_zarr = zarr.open(tiff_image_store, mode='r')
-                self.image_array = da.from_zarr(tiff_image_zarr)
+                self.image_array = da.from_zarr(tiff_image_zarr,chunks=(2048,2048) if len(tiff_image_zarr.shape) == 2 else (2048,2048,3))
                 if channel is not None:
                     self.image_array = self.image_array[channel]
             elif ext in COMPLEX_FILETYPES:
@@ -144,7 +138,7 @@ class GenericTiffHandler:
                     #tiff_image_store = tiff_image.pages[3].aszarr(level=0)
                     tiff_image_store = tiff_image.series[1].pages[0].aszarr(level=0)
                 tiff_image_zarr = zarr.open(tiff_image_store, mode='r')
-                self.image_array = da.from_zarr(tiff_image_zarr)
+                self.image_array = da.from_zarr(tiff_image_zarr,chunks=(2048,2048) if len(tiff_image_zarr.shape) == 2 else (2048,2048,3))
             else:
                 raise ValueError("Unsupported file type.")
         elif image_array is not None:
@@ -159,8 +153,8 @@ class GenericTiffHandler:
         self.currentMpp = None
         
         if self.path:
-            self.ogMag = self.get_original_magnification(os.path.splitext(os.path.basename(self.path))[-1])
-            self.ogMpp = self.get_original_pixel_size(os.path.splitext(os.path.basename(self.path))[-1])
+            self.ogMag = self.get_original_magnification(os.path.splitext(os.path.basename(self.path))[-1],verbose=False)
+            self.ogMpp = self.get_original_pixel_size(os.path.splitext(os.path.basename(self.path))[-1],verbose=False)
             self.currentMag = self.ogMag
             self.currentMpp = self.ogMpp
         
@@ -272,7 +266,7 @@ class GenericTiffHandler:
 
         if asImage:
             if self.isDaskArray:
-                tile = tile.compute(scheduler='threads')
+                    tile = tile.compute() #scheduler='threading'
             else:
                 tile = tile
             return Image.fromarray(tile)
@@ -289,7 +283,7 @@ class GenericTiffHandler:
         
         if asImage:
             if self.isDaskArray:
-                tile = tile.compute(scheduler='threads')
+                tile = tile.compute() #scheduler='threads'
             else:
                 tile = tile
             return Image.fromarray(tile)
@@ -560,7 +554,7 @@ class GenericTiffHandler:
                     MaskObject.convert_between_magnification(self.currentMag)
                     downsampling_factor = 20
                     mask_downsampled = MaskObject.get_thumbnail(downsampling_factor)
-                    
+
                     mask_label = label(np.asarray(mask_downsampled))
                     regions = regionprops(mask_label)
 
@@ -569,6 +563,7 @@ class GenericTiffHandler:
                     bboxes_origal_reshaped = [(bbox[1], bbox[0], bbox[3], bbox[2]) for bbox in bboxes_original]
 
                     # Get the tiles that are included in the bounding boxes
+                    
                     candidate_tiles = []
                     for bbox in bboxes_origal_reshaped:
                         candidate_tiles.append(get_tiles_in_bbox(*bbox, tile_height, tile_width, overlap))
@@ -602,10 +597,11 @@ class GenericTiffHandler:
         self.currentMpp = mpp
     
     def save_to_tiff_with_metadata(self, saving_path=None):
-        
+        import pyvips  # Local import to avoid global dependency issues
+            
         if saving_path is None:
             raise ValueError("A saving_path must be provided.")
-        
+            
         # Create a pyvips image based on the available data:
         if self.path is not None:
             # Read via pyvips from the file path
@@ -621,44 +617,44 @@ class GenericTiffHandler:
                     raise ValueError("Only 2D images are supported for saving.")
                 array = self.image_array
             
-            # Convert the numpy array to a pyvips image.
-            height, width = array.shape
-            bands = 1  # For binary/2D image, only one band is present
-            fmt = 'uchar'
-            array_bytes = array.tobytes()
-            pyvipsImage = pyvips.Image.new_from_memory(array_bytes, width, height, bands, fmt)
+        # Convert the numpy array to a pyvips image.
+        height, width = array.shape
+        bands = 1  # For binary/2D image, only one band is present
+        fmt = 'uchar'
+        array_bytes = array.tobytes()
+        pyvipsImage = pyvips.Image.new_from_memory(array_bytes, width, height, bands, fmt)
+        
+        # Copy image to add metadata
+        pyvipsImageTemp = pyvipsImage.copy()
+        image_height = pyvipsImageTemp.height
+        image_width = pyvipsImageTemp.width
+        image_bands = pyvipsImageTemp.bands
             
-            # Copy image to add metadata
-            pyvipsImageTemp = pyvipsImage.copy()
-            image_height = pyvipsImageTemp.height
-            image_width = pyvipsImageTemp.width
-            image_bands = pyvipsImageTemp.bands
+        # Construct XML metadata
+        xml_str = f"""<?xml version="1.0" encoding="UTF-8"?>
+<OME xmlns="http://www.openmicroscopy.org/Schemas/OME/2016-06"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.openmicroscopy.org/Schemas/OME/2016-06 http://www.openmicroscopy.org/Schemas/OME/2016-06/ome.xsd">
+    <Image ID="Image:0">
+        <Pixels DimensionOrder="XYCZT"
+                ID="Pixels:0"
+                SizeC="{image_bands}"
+                SizeT="1"
+                SizeX="{image_width}"
+                SizeY="{image_height}"
+                SizeZ="1"
+                Type="uint8">
+        </Pixels>
+    </Image>
+</OME>"""
             
-            # Construct XML metadata
-            xml_str = f"""<?xml version="1.0" encoding="UTF-8"?>
-    <OME xmlns="http://www.openmicroscopy.org/Schemas/OME/2016-06"
-        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-        xsi:schemaLocation="http://www.openmicroscopy.org/Schemas/OME/2016-06 http://www.openmicroscopy.org/Schemas/OME/2016-06/ome.xsd">
-        <Image ID="Image:0">
-            <Pixels DimensionOrder="XYCZT"
-                    ID="Pixels:0"
-                    SizeC="{image_bands}"
-                    SizeT="1"
-                    SizeX="{image_width}"
-                    SizeY="{image_height}"
-                    SizeZ="1"
-                    Type="uint8">
-            </Pixels>
-        </Image>
-    </OME>"""
-            
-            # Set the metadata parameters
-            pyvipsImageTemp.set_type(pyvips.GValue.gint_type, "page-height", image_height)
-            pyvipsImageTemp.set_type(pyvips.GValue.gstr_type, "image-description", xml_str)
-            
-            # Save the image as a TIFF with metadata, tiling, and pyramid structure.
-            pyvipsImageTemp.tiffsave(saving_path, compression="lzw", tile=True,
-                                    tile_width=512, tile_height=512, Q=100,
-                                    pyramid=True, subifd=True)
-            
-            return True
+        # Set the metadata parameters
+        pyvipsImageTemp.set_type(pyvips.GValue.gint_type, "page-height", image_height)
+        pyvipsImageTemp.set_type(pyvips.GValue.gstr_type, "image-description", xml_str)
+        
+        # Save the image as a TIFF with metadata, tiling, and pyramid structure.
+        pyvipsImageTemp.tiffsave(saving_path, compression="jpeg", tile=True,
+                                tile_width=512, tile_height=512, Q=100,
+                                pyramid=True, subifd=True)
+        
+        return True

@@ -17,6 +17,18 @@ import dask
 
 import pyvips
 
+# HistomicsTK Imports
+from histomicstk.preprocessing.color_conversion import (
+    rgb_to_lab, lab_mean_std, rgb_to_hsi
+)
+from histomicstk.preprocessing.color_deconvolution import (
+    stain_color_map, rgb_separate_stains_macenko_pca, color_deconvolution, find_stain_index
+)
+from histomicstk.saliency.tissue_detection import (
+    get_slide_thumbnail, get_tissue_mask, threshold_multichannel
+)
+from histomicstk.utils import simple_mask
+
 # Increase maximum number of pixels that PIL can process
 PIL.Image.MAX_IMAGE_PIXELS = None 
 
@@ -469,19 +481,29 @@ class GenericTiffHandler:
             tissue_percentage = (np.sum(tile_tissue) / (tile_tissue.shape[0] * tile_tissue.shape[1])) * 100
             return (col, row) if tissue_percentage > tissue_percentage_threshold else None
         
-        def __get_tissue_mask__(self,tile):
-            """Runs htk.segmentation.simple_mask in the main process before parallel execution."""
-            try:
-                return htk.segmentation.simple_mask(tile)
-            except:
-                return np.zeros(tile.shape[:2], dtype=np.uint8)  # Safe fallback
-        
+        def __get_tissue_mask__(tile):
+            """ Return a binary mask of the tissue in the tile."""
+            tile = np.asarray(tile)
+            
+            background_mask, _ = threshold_multichannel(rgb_to_hsi(tile), {
+                'hue': {'min': 0, 'max': 1.0},
+                'saturation': {'min': 0, 'max': 0.2},
+                'intensity': {'min': 220, 'max': 255},
+            }, just_threshold=True)
+            
+            background_mask = np.asarray(background_mask, dtype=np.uint8)
+            # Invert the mask to get the tissue area
+            tissue_mask = (1-background_mask).astype(np.uint8)
+            # Ensure the mask is binary
+            return tissue_mask
+
         assert self.path is not None, "The path to the image must be provided for this operation."
-    
+
         dataset_path = os.path.dirname(os.path.dirname(self.path))
-        
+
         if tissue_mask_path is None:
-            self.tissue_mask_path = glob.glob(os.path.join(dataset_path,'Tissue Masks',os.path.splitext(os.path.basename(self.path))[0]+'*.tiff'))
+            self.tissue_mask_path = glob.glob(os.path.join(dataset_path, 'Tissue Masks', 
+                                                         os.path.splitext(os.path.basename(self.path))[0] + '*.tiff'))
             if len(self.tissue_mask_path) == 0:
                 self.tissue_mask_path = None
             else:
@@ -490,13 +512,34 @@ class GenericTiffHandler:
             self.tissue_mask_path = tissue_mask_path
 
         Tiles_y, Tiles_x = self.get_tile_dimensions(tile_height, tile_width, overlap)
-      
+          
         tissue_masks = {}
         if self.tissue_mask_path is None:
-            for col in range(Tiles_y):
-                for row in range(Tiles_x):
-                    tile = np.asarray(self.get_tile(tile_height, tile_width, overlap, col, row, asImage=True).resize((512,512)))
-                    tissue_masks[(col, row)] = __get_tissue_mask__(tile)
+            mode = 'naive'  # Default to naive mode if no tissue mask is provided
+            # Process each tile individually to avoid caching all tiles in memory
+            if mode == 'naive':
+                # Generate parameters for each tile
+                tile_params = [
+                    (col, row, tile_height, tile_width, overlap, tissue_percentage_threshold, self.path)
+                    for col in range(Tiles_y)
+                    for row in range(Tiles_x)
+                ]
+                
+                # Define a new process_tile function to create mask on demand
+                def process_tile_with_mask(tile_params):
+                    col, row, tile_height, tile_width, overlap, tissue_percentage_threshold, path = tile_params
+                    # Get tile directly and process it
+                    tile = GenericTiffHandler(path).get_tile(tile_height, tile_width, overlap, col, row, asImage=True)
+                    # Convert tile to numpy array and get tissue mask
+                    tile_tissue = __get_tissue_mask__(tile)
+                    tissue_percentage = (np.sum(tile_tissue) / (tile_tissue.shape[0] * tile_tissue.shape[1])) * 100
+                    return (col, row) if tissue_percentage > tissue_percentage_threshold else None
+                
+                results = ParallelPbar("Calculating useful tiles...")(n_jobs=cpu_workers, backend='loky')(
+                    delayed(process_tile_with_mask)(params) for params in tile_params
+                )
+                return [tile for tile in results if tile is not None ]
+
         elif self.tissue_mask_path is not None:
             if mode=='naive':
                 tile_params = [

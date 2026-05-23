@@ -10,7 +10,6 @@ import xml.etree.ElementTree as ET
 from tqdm_joblib import ParallelPbar
 from joblib import delayed, Parallel
 import glob
-import histomicstk as htk
 import pathlib
 from skimage.measure import label, regionprops
 from skimage.filters import threshold_otsu

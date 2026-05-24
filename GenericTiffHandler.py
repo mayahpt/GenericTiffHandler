@@ -569,7 +569,7 @@ class GenericTiffHandler:
                         self.get_tile(tile_height, tile_width, overlap, col, row)
                             .resize((TILE_RESIZE_SIZE, TILE_RESIZE_SIZE))
                     )
-                    tissue_masks[(row, col)] = _compute_tissue_mask(tile)
+                    tissue_masks[(col, row)] = _compute_tissue_mask(tile)
 
         # ── Shared processing helpers ─────────────────────────────────────────
         proc_args = dict(
@@ -587,15 +587,15 @@ class GenericTiffHandler:
 
         def _run_parallel(positions, label):
             results = ParallelPbar(label)(n_jobs=cpu_workers, backend='loky')(
-                delayed(_evaluate_tile)(r, c, **proc_args)
-                for r, c in positions
+                delayed(_evaluate_tile)(c, r, **proc_args)
+                for c, r in positions
             )
             return [t for t in results if t is not None]
 
         # ── Mode: naive ───────────────────────────────────────────────────────
         if mode == 'naive':
             all_positions = [
-                (r, c)
+                (c, r)
                 for r in range(tiles_y)
                 for c in range(tiles_x)
             ]
@@ -604,15 +604,15 @@ class GenericTiffHandler:
         # ── Mode: faster ──────────────────────────────────────────────────────
         if mode == 'faster':
             coarse_positions = [
-                (r, c)
+                (c, r)
                 for r in range(0, tiles_y, grid_step)
                 for c in range(0, tiles_x, grid_step)
             ]
             coarse_hits = _run_parallel(coarse_positions, "Selecting coarse results...")
 
             candidate_set = {
-                (r + dc, c + dr)
-                for r, c in coarse_hits
+                (c + dr, r + dc)
+                for c, r in coarse_hits
                 for dc in range(-(grid_step - 1), grid_step)
                 for dr in range(-(grid_step - 1), grid_step)
                 if 0 <= r + dc < tiles_y and 0 <= c + dr < tiles_x
@@ -720,17 +720,17 @@ def _compute_tissue_mask(tile: np.ndarray) -> np.ndarray:
         return np.zeros(tile.shape[:2], dtype=np.uint8)
 
 
-def _evaluate_tile(r, c, *, tissue_mask_path, tissue_masks,
+def _evaluate_tile(c, r, *, tissue_mask_path, tissue_masks,
                    tile_height, tile_width, overlap, threshold,
                    og_mag, og_mpp, current_mag, current_mpp):
     """
-    Return ``(r, c)`` when the tile contains more than *threshold* %
+    Return ``(c, r)`` when the tile contains more than *threshold* %
     tissue, otherwise return ``None``.
 
     This function is designed to be called in parallel via joblib.
     """
     if tissue_mask_path is None:
-        tile_tissue = tissue_masks[(r, c)]
+        tile_tissue = tissue_masks[(c, r)]
     else:
         mask_obj = GenericTiffHandler(tissue_mask_path)
         mask_obj.set_magnification_settings(og_mag, og_mpp)
@@ -744,7 +744,7 @@ def _evaluate_tile(r, c, *, tissue_mask_path, tissue_masks,
             tile_tissue = tile_tissue / TISSUE_NORMALIZE_MAX
 
     pct = tile_tissue.sum() / tile_tissue.size * 100
-    return (r, c) if pct > threshold else None
+    return (c, r) if pct > threshold else None
 
 
 def _expand_bbox(bbox, padding, downsample):
@@ -797,7 +797,7 @@ def _tiles_in_bbox(x_min, y_min, x_max, y_max,
             # Standard rectangle-overlap test
             if not (ty + th <= y_min or ty >= y_max or
                     tx + tw <= x_min or tx >= x_max):
-                yield (row, col)
+                yield (col, row)
 
 
 def _build_ome_xml(width, height, bands):

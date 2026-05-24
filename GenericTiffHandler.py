@@ -329,15 +329,15 @@ class GenericTiffHandler:
         tiles_x = int(np.ceil(img_width  / tile_width))
         return tiles_y, tiles_x
 
-    def get_coordinates_for_tile(self, pos_y, pos_x, tile_height, tile_width, overlap):
+    def get_coordinates_for_tile(self, row, col, tile_height, tile_width, overlap):
         """
         Return ``(coord_y, coord_x, eff_height, eff_width)`` for a tile at
-        grid position ``(pos_y, pos_x)``.
+        grid position ``(row, col)``.
 
         Parameters
         ----------
-        pos_y, pos_x : int
-            Zero-based tile indices.
+        row, col : int
+            Zero-based tile indices (row = y, col = x).
         tile_height, tile_width : int
             Nominal tile size in pixels.
         overlap : int
@@ -346,37 +346,38 @@ class GenericTiffHandler:
         Raises
         ------
         ValueError
-            When ``pos_x`` or ``pos_y`` fall outside the valid range.
+            When ``col`` or ``row`` fall outside the valid range.
         """
         dims = self.get_image_dimensions()
         img_height, img_width = dims[-2], dims[-1]
         tiles_y, tiles_x = self.get_tile_dimensions(tile_height, tile_width, overlap)
 
-        if not (0 <= pos_x < tiles_x):
-            raise ValueError(f"Invalid x position: {pos_x} (range 0–{tiles_x - 1})")
-        if not (0 <= pos_y < tiles_y):
-            raise ValueError(f"Invalid y position: {pos_y} (range 0–{tiles_y - 1})")
+        if not (0 <= col < tiles_x):
+            raise ValueError(f"Invalid col position: {col} (range 0–{tiles_x - 1})")
+        if not (0 <= row < tiles_y):
+            raise ValueError(f"Invalid row position: {row} (range 0–{tiles_y - 1})")
 
-        coord_y = max(0, pos_y * tile_height - overlap)
-        coord_x = max(0, pos_x * tile_width  - overlap)
+        coord_y = max(0, row * tile_height - overlap)
+        coord_x = max(0, col * tile_width  - overlap)
 
-        if pos_y == tiles_y - 1:
+        if row == tiles_y - 1:
             eff_height = img_height - coord_y
         else:
-            eff_height = tile_height + (overlap if pos_y == 0 else 2 * overlap)
+            eff_height = tile_height + (overlap if row == 0 else 2 * overlap)
 
-        if pos_x == tiles_x - 1:
+        if col == tiles_x - 1:
             eff_width = img_width - coord_x
         else:
-            eff_width = tile_width + (overlap if pos_x == 0 else 2 * overlap)
+            eff_width = tile_width + (overlap if col == 0 else 2 * overlap)
 
         return coord_y, coord_x, eff_height, eff_width
 
     # ── Tile extraction ───────────────────────────────────────────────────────
 
-    def get_tile(self, tile_height, tile_width, overlap, y, x, as_image=True):
+    def get_tile(self, tile_height, tile_width, overlap, row, col, as_image=True):
         """
-        Extract a tile from the image at grid position ``(y, x)``.
+        Extract a tile from the image at grid position ``(row, col)``.
+        Matches OpenSlide convention (row = y, col = x).
 
         Parameters
         ----------
@@ -385,7 +386,7 @@ class GenericTiffHandler:
             otherwise return the raw array slice.
         """
         slide = standardize_image_for_display(self.image_array)
-        cy, cx, eff_h, eff_w = self.get_coordinates_for_tile(y, x, tile_height, tile_width, overlap)
+        cy, cx, eff_h, eff_w = self.get_coordinates_for_tile(row, col, tile_height, tile_width, overlap)
 
         tile = (
             slide[cy:cy + eff_h, cx:cx + eff_w]
@@ -777,7 +778,7 @@ def _expand_bbox(bbox, padding, downsample):
 def _tiles_in_bbox(x_min, y_min, x_max, y_max,
                    tile_height, tile_width, overlap, handler):
     """
-    Yield ``(pos_y, pos_x)`` indices for all tiles that intersect the given
+    Yield ``(row, col)`` indices for all tiles that intersect the given
     bounding box.
 
     Parameters
@@ -788,15 +789,15 @@ def _tiles_in_bbox(x_min, y_min, x_max, y_max,
         Used to resolve tile coordinates.
     """
     tiles_y, tiles_x = handler.get_tile_dimensions(tile_height, tile_width, overlap)
-    for pos_y in range(tiles_y):
-        for pos_x in range(tiles_x):
+    for row in range(tiles_y):
+        for col in range(tiles_x):
             ty, tx, th, tw = handler.get_coordinates_for_tile(
-                pos_y, pos_x, tile_height, tile_width, overlap
+                row, col, tile_height, tile_width, overlap
             )
             # Standard rectangle-overlap test
             if not (ty + th <= y_min or ty >= y_max or
                     tx + tw <= x_min or tx >= x_max):
-                yield (pos_y, pos_x)
+                yield (row, col)
 
 
 def _build_ome_xml(width, height, bands):

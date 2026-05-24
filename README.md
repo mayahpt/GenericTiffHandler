@@ -1,10 +1,8 @@
 # GenericTiffHandler
 
-A lazy-loading wrapper around TIFF-family whole-slide images (WSI), supporting
-`.tif`, `.tiff`, `.svs`, `.ndpi`, and `.scn` formats via `tifffile` + `zarr` + `dask`.
-
-Designed as a lightweight alternative to OpenSlide for research and
-histopathology pipelines.
+A unified, lazy-loading alternative to OpenSlide for reading both proprietary
+whole-slide image formats (.svs, .ndpi, .scn) and standard .tiff files through a single,
+consistent API — built on `tifffile` + `zarr` + `dask` for memory-efficient access.
 
 ## Features
 

@@ -15,7 +15,15 @@ from skimage.measure import label, regionprops
 from skimage.filters import threshold_otsu
 from skimage.color import rgb2gray
 import dask
-import pyvips
+
+try:
+    import pyvips
+    _HAS_PYVIPS = True
+except (ImportError, OSError):
+    _HAS_PYVIPS = False
+    pyvips = None
+
+_HAS_HISTOMICSTK = False
 
 PIL.Image.MAX_IMAGE_PIXELS = None
 
@@ -380,9 +388,9 @@ class GenericTiffHandler:
         cy, cx, eff_h, eff_w = self.get_coordinates_for_tile(y, x, tile_height, tile_width, overlap)
 
         tile = (
-            slide[cx:cx + eff_w, cy:cy + eff_h]
+            slide[cy:cy + eff_h, cx:cx + eff_w]
             if slide.ndim == 2
-            else slide[cx:cx + eff_w, cy:cy + eff_h, :]
+            else slide[cy:cy + eff_h, cx:cx + eff_w, :]
         )
 
         if not as_image:
@@ -654,6 +662,12 @@ class GenericTiffHandler:
         ValueError
             When no *saving_path* is provided or the in-memory array is not 2-D.
         """
+        if not _HAS_PYVIPS:
+            raise ImportError(
+                "pyvips is required for saving TIFF files. "
+                "Install with: pip install pyvips"
+            )
+
         if saving_path is None:
             raise ValueError("saving_path must be provided.")
 

@@ -1,5 +1,22 @@
+# Build artifacts
 build/
+dist/
 *.egg-info/
+
+# Python cache
 __pycache__/
 *.pyc
+
+# Old archive / obsolete folders
+Archive/
+Conda Env/
+
+# OS files
 .DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+Example/
